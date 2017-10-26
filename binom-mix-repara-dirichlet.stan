@@ -29,7 +29,7 @@ model {
   // cache log calculation, slight speed-up from
   // (Estimating Parameters of a Mixture, Stan Manual p192)
   for (k in 1:K)
-    log_theta[k] = log(theta[k]); 
+    log_theta[k] = log(theta[k]);
 
   // likelihood
   for(i in 1:N) {                       // for each observation

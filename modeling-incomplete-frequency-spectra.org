@@ -1254,3 +1254,182 @@ dr
 triangle.plot(dr, min3=c(0,0,0), max3=c(1,1,1))
 #+END_SRC
 
+*** REJC Simulate data from Stan - doesn't work with mixture models that only increment likelyhoods desities
+    CLOSED: [2017-10-24 Tue 14:56]
+
+#+BEGIN_SRC R
+library(rstan)
+library(tidyverse)
+
+sm <- "
+parameters {
+  real y;
+}
+model {
+  y ~ normal(1,1);
+}
+"
+
+stan(model_code=sm)
+
+
+
+scode <- "
+     parameters {
+       real y[2];
+     }
+     model {
+       y[1] ~ normal(0, 1);
+       y[2] ~ double_exponential(0, 2);
+     }
+     "
+fit1 <- stan(model_code = scode, iter = 10, verbose = FALSE)
+print(fit1)
+fit2 <- stan(fit = fit1, iter = 10000, verbose = FALSE)
+
+## extract samples as a list of arrays
+e2 <- extract(fit2, permuted = TRUE)
+## using as.array on the stanfit object to get samples
+a2 <- as.array(fit2)
+a2 %>% tbl_df
+#+END_SRC
+
+*** IMG in Stan
+The biggest problem with robustly modeling the true frequency spectrum from
+incomplete data via Bayesian Inference is the choice and parameterization of the
+priors. Ideally, one would like to estimate the IMG gene gain/loss parameter
+directly, and mixing rates of the underlying binomials only indirectly.
+
+IMG:
+- gain rate :: mu
+- loss rate :: nu
+- N :: population size
+in scaled coalescent units:
+- gain rate :: theta = 2 N mu
+- loss rate :: rho = 2 N nu
+
+#+BEGIN_SRC R
+library(tidyverse)
+library(rstan)
+library(ggmcmc)
+rstan_options(auto_write = TRUE)
+options(mc.cores = parallel::detectCores())
+
+## Collins, R. E., & Higgs, P. G. (2012). Testing the infinitely many genes model for the evolution of the bacterial core genome and pangenome. Molecular Biology and Evolution, 29(11), 3413–3425.
+source("../pangenome-infinitely-many-genes/f-pangenome.R")
+
+# rho1, theta1, core, rho2, theta2
+rho1 <- .5    # rate of loosing a single gene with time units 2N_e
+theta1 <- 200  # average number of genes gained in 2N_e
+ng <- 10
+f.coalescent(c(rho1, theta1), ng) %>%
+    tbl_df %>%
+    mutate(n=1:ng) %>%
+    gather(set, value, -n) %>%
+#    mutate(value=00) %>%
+    ggplot() + aes(x=n, y=value, color=set) + geom_line()
+
+fc0 <- f.coalescent.spec(c(rho1, theta1), ng) %>% tbl_df %>% mutate(n=1:ng)
+ggplot(fc0) + aes(x=n, y=value) + geom_col()
+
+
+##---------------------------------------------------
+
+foo <- function(K, rho1, theta1) {
+
+  spec <- (1:K)*0
+
+  (specprod1 <- (K+1 - 1:K)/(K+rho1 - 1:K))
+
+  for (k in 1:K) {
+      spec[k] <- (theta1/k)*prod(specprod1[1:k])
+  }
+
+  return(spec)
+}
+
+fc1 <- foo(ng, rho1, theta1) %>% tbl_df %>% mutate(n=1:ng)
+bind_rows(.id="set", ref=fc0, me=fc1) %>%
+    ggplot() + aes(x=n, y=value, fill=set) + geom_col(position="dodge")
+
+model_stan_compiled <- stan_model("foo.stan")
+
+model <- sampling(
+    model_stan_compiled,
+    algorithm="Fixed_param",
+    iter = 1, chains=1, data=list(K=ng, rho=rho1, theta=theta1))
+
+
+
+model_stan_compiled <- stan_model("img-freqspec-coalescent.stan")
+
+m_img_coal_1 <- sampling(
+    model_stan_compiled,
+    iter = 1000, chains=4,
+    data=list(
+        N=nrow(fc1), y=sample(fc1$value), K=ng))
+
+
+model <- m_img_coal_1
+print(model)
+S <- ggs(model)
+ggs_traceplot(S) + facet_wrap(~Parameter, ncol=5)
+ggs_caterpillar(S)
+
+
+fit <- data_frame(
+    x=1:10,
+    ymin=foo(10, .49, 197.10),
+    ymed=foo(10, .50, 199.95),
+    ymax=foo(10, .51, 202.95))
+
+bind_rows(.id="set", ref=fc0, me=fc1) %>%
+    ggplot() + aes(x=n, y=value, fill=set) + geom_col(position="dodge") +
+    geom_pointrange(data=fit, aes(x, ymed, ymin=ymin, ymax=ymax, fill=NA))
+
+
+################################################################################
+## Priors
+fc1
+x <- 0:1000
+d0 <- bind_rows(
+    .id="dist",
+    cauchy_50_5=data_frame(x=x, y=dcauchy(x,50,5)),
+    norm_50_5=data_frame(x=x, y=dnorm(x,50,5)),
+    gamma_s50_m50=data_frame(x=x, y=dgamma(x,5,scale=50)),
+    cauchy_500_5=data_frame(x=x, y=dcauchy(x,500,5)),
+    norm_500_5=data_frame(x=x, y=dnorm(x,500,5)),
+    gamma_s500_m500=data_frame(x=x, y=dgamma(x,50,scale=500))
+)
+
+x <- 0:50
+d0 <- bind_rows(
+    .id="dist",
+    gamma_s1_t2=data_frame(x=x, y=dgamma(x,1,scale=2)),
+    gamma_s2_t2=data_frame(x=x, y=dgamma(x,2,scale=2)),
+    gamma_s3_t2=data_frame(x=x, y=dgamma(x,3,scale=2)),
+    gamma_s1_t4=data_frame(x=x, y=dgamma(x,1,scale=4)),
+    gamma_s2_t4=data_frame(x=x, y=dgamma(x,2,scale=4)),
+    gamma_s3_t4=data_frame(x=x, y=dgamma(x,3,scale=4))
+)
+
+x <- 0:5000
+d0 <- bind_rows(
+    .id="dist",
+    cauchy_1000_5=data_frame(x=x, y=dcauchy(x,1000,1000)))
+
+x <- 0:1500/10
+d0 <- bind_rows(
+    .id="dist",
+    cauchy_05_5=data_frame(x=x, y=dcauchy(x,0.5,10)))
+
+
+ggplot(d0) + aes(x,y,color=dist) + geom_line() + ylim(0,NA)
+#+END_SRC
+
+#+BEGIN_SRC stan
+data {
+
+}
+#+END_SRC
+
