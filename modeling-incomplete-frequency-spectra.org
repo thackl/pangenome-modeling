@@ -49,11 +49,11 @@ t1 <- bind_rows(.id="Completeness",
 
 
 t1 %>% group_by(Completeness) %>% summarize(sum(seen))
-    
+
 b1 <- data_frame(
     x=1:100,
     y=dbinom(x,100,.80) * 2000)
-    
+
 ggplot(t1) +
     aes(seen, fill=as.character(genomes)) +
     geom_bar() +
@@ -136,7 +136,7 @@ dbinoX_superslow <- function(x, sizes, probs, weights=1, log=FALSE){
             mutate(weight=weight/sum(weight)) # relative weight
     y <- sapply(x, function(k){ # for each observed value
         sum(apply(spw, 1, function(l){ # sum over each params (sizes+probs) * weight
-            dbinom(k, l[1], l[2]) * l[3] 
+            dbinom(k, l[1], l[2]) * l[3]
         }))
     })
     if(log==TRUE) log(y) else y
@@ -193,7 +193,7 @@ f2_gg
 # parameter (theta) given the observed data (x), is given by the PMF of the
 # binomial distr.: L(theta|x) = p_theta(x) = P_theta(X=x)
 # https://en.wikipedia.org/wiki/Likelihood_function
-# 
+#
 # And from the mixture rule above it follows for the Likelihood of a binomial
 # mixture:
 
@@ -401,10 +401,10 @@ freq_fit <- function(d, regularized=FALSE){
                 method="L-BFGS-B", lower=0, control=list(trace=TRUE, maxit=500),
                 x=x, sizes=sizes, probs=d$p) # data
         }
-        
+
         weights_mle <- MLE$par / sum(MLE$par) # normalized weights
         print(weights_mle)
-        
+
         d$fit[[i]] <- data_frame(
             size=d$range,
             freq=dbinoX(d$range, sizes, p, weights_mle) * n)
@@ -547,7 +547,7 @@ freq_fit <- function(d, wrapper="optim", method="Nelder-Mead", lambda=NULL, lowe
             weights_guess_names <- paste0("w", 1:length(weights_guess))
             names(weights_guess) <- weights_guess_names
             parnames(LL_binoX) <- weights_guess_names
-                        
+
             MLE <- mle2(
                 LL_binoX, method=method,
                 start=weights_guess,
@@ -567,7 +567,7 @@ freq_fit <- function(d, wrapper="optim", method="Nelder-Mead", lambda=NULL, lowe
             weights_mle <- dbeta(1:m/m,ab[1],ab[2])
             weights_mle <- weights_mle/sum(weights_mle) # normalize weights
         }
-        
+
         d$mle[[i]] <- MLE
         d$fit[[i]] <- data_frame(
             size=d$range,
@@ -746,7 +746,7 @@ LL_x_binoX <- function(x, sizes, probs, w1, xeights, lower_bound=NULL){
     # negative log likelihood
     -sum(dbinoX(x, sizes, probs, weights, log=TRUE))
 }
-     
+
 freq_sim <- function(d, n=1){
     d$sim <- list()
     for(i in 1:n){
@@ -784,7 +784,7 @@ freq_fit <- function(d, wrapper="optim", method="Nelder-Mead", lambda=NULL, lowe
             weights_guess_names <- paste0("w", 1:length(weights_guess))
             names(weights_guess) <- weights_guess_names
             parnames(LL_binoX) <- weights_guess_names
-                        
+
             MLE <- mle2(
                 LL_binoX, method=method,
                 start=weights_guess,
@@ -799,7 +799,7 @@ freq_fit <- function(d, wrapper="optim", method="Nelder-Mead", lambda=NULL, lowe
             xeights_guess_names <- paste0("x", 1:length(xeights_guess))
             names(xeights_guess) <- xeights_guess_names
             parnames(LL_x_binoX) <- xeights_guess_names
-                        
+
             MLE <- mle2(
                 LL_x_binoX, method=method,
                 start=xeights_guess,
@@ -809,7 +809,7 @@ freq_fit <- function(d, wrapper="optim", method="Nelder-Mead", lambda=NULL, lowe
             weights_mle <- x2w(w1, coef(MLE))
             weights_mle <- weights_mle/sum(weights_mle) # normalized weights
         }
-        
+
         d$mle[[i]] <- MLE
         d$fit[[i]] <- data_frame(
             size=d$range,
@@ -894,12 +894,12 @@ options(mc.cores = parallel::detectCores())
 stan_model_8schools <- "
 // saved as 8schools.stan
 data {
-  int<lower=0> J; // number of schools 
+  int<lower=0> J; // number of schools
   real y[J]; // estimated treatment effects
-  real<lower=0> sigma[J]; // s.e. of effect estimates 
+  real<lower=0> sigma[J]; // s.e. of effect estimates
 }
 parameters {
-  real mu; 
+  real mu;
   real<lower=0> tau;
   real eta[J];
 }
@@ -914,11 +914,11 @@ model {
 }
 "
 
-schools_dat <- list(J = 8, 
+schools_dat <- list(J = 8,
                     y = c(28,  8, -3,  7, -1,  1, 18, 12),
                     sigma = c(15, 10, 16, 11,  9, 11, 10, 18))
 
-fit <- stan(model_code=stan_model_8schools, data = schools_dat, 
+fit <- stan(model_code=stan_model_8schools, data = schools_dat,
             iter = 1000, chains = 4)
 
 print(fit)
@@ -1038,7 +1038,7 @@ parameters to be estimated for a series of classes, and some dynamic prior
 assignment to these parameters - so quite similar to the weights I am interested
 in
 
-**** Finite mixture models in Stan 
+**** Finite mixture models in Stan
 http://modernstatisticalworkflow.blogspot.com/2016/10/finite-mixture-models-in-stan.html
 
 
@@ -1063,11 +1063,11 @@ z <- sample(1:3, size = N, prob = Theta, replace = T)
 # Some white noise
 epsilon <- rnorm(N)
 
-# Simulate the data using the fact that y ~ normal(mu, sigma) can be 
+# Simulate the data using the fact that y ~ normal(mu, sigma) can be
 # expressed as y = mu + sigma*epsilon for epsilon ~ normal(0, 1)
 y <- mu[z] + sigma[z]*epsilon
 
-data_frame(y, z = as.factor(z)) %>% 
+data_frame(y, z = as.factor(z)) %>%
   ggplot(aes(x = y, fill = z)) +
   geom_density(alpha = 0.3)
 
@@ -1088,8 +1088,8 @@ model {
   mu ~ normal(0, 10);
   sigma ~ cauchy(0, 2);
   Theta ~ dirichlet(rep_vector(2.0, n_groups));
-  
-  
+
+
   // likelihood
   for(i in 1:N) {
     for(k in 1:n_groups) {
@@ -1162,10 +1162,11 @@ dbinoX <- function(x, sizes, probs, weights=NULL, log=FALSE){
 }
 
 set.seed(1337)
-n <- 1e4
+n <- 1e3
 sizes <- c(81:100)
 p <- .8
 weights <- c(1:20)
+weights <- weights/sum(weights)
 sizes
 weights
 
@@ -1178,7 +1179,7 @@ ggplot(d1) + aes(x=y, fill=as.factor(size)) +
 #    geom_area(aes(color=as.factor(size), ),alpha=.1, stat="bin", binwidth=1, position="dodge") +
     geom_bar() +
     xlim(0,100)
-    
+
 
 #package the data for stan
 data <- list(
@@ -1194,57 +1195,7 @@ data <- list(
     kappa = 100 # strength
 )
 
-weights/sum(weights) * 100
-
-
-model_stan_code <- "
-data {
-  // observations
-  int N;                                // n/o observations
-  int y[N];                             // observations
-  // mixture components
-  int K;                                // n/o components
-  int sizes[K];                         // size of each component
-  vector[K] probs;                      // probability of each component
-  // dirichlet prior params
-  simplex[K] phi;                       // expected mean
-  real<lower=0> kappa;                  // strength as count
-}
-parameters {
-  simplex[K] theta;                     // mixture weights to estimate
-}
-transformed parameters {
-  vector[K] alpha = kappa * phi;        // reparameterized dirichlet alpha
-}
-model {
-  // declare
-  real log_theta[K];
-  real lps[K];
-
-  // priors
-  // theta ~ dirichlet(rep_vector(2.0, K));
-  // Reparameterization of Dirichlet Priors (Stan Manual p282)
-  theta ~ dirichlet(alpha);
-
-  // cache log calculation, slight speed-up from
-  // (Estimating Parameters of a Mixture, Stan Manual p192)
-  for (k in 1:K)
-     log_theta[k] = log(theta[k]); 
-
-  // likelihood
-  for(i in 1:N) {                       // for each observation
-    lps = log_theta;                    // init ll with log_theta
-    for(k in 1:K) {                     // for each component
-      if (y[i] > sizes[k])              // can't have more successes than trials
-        lps[k] = negative_infinity();
-      else                              // add ll
-        lps[k]= lps[k] + binomial_lpmf(y[i] | sizes[k], probs[k]);
-    }
-    target += log_sum_exp(lps);         // update ll density
-  }
-}"
-model_stan_compiled <- stan_model(model_code=model_stan_code)
-
+model_stan_compiled <- stan_model("binom-mix-repara-dirichlet.stan")
 
 model <- sampling(
     model_stan_compiled,
@@ -1256,10 +1207,36 @@ model_k100 <- model
 
 print(model)
 S <- ggs(model) %>% filter(grepl("theta", Parameter))
-#ggs_traceplot(S) + facet_wrap(~Parameter, ncol=5, strip.position="left")
-ggs_caterpillar(S)
+ggs_traceplot(S) + facet_wrap(~Parameter, ncol=5)
+
+ggs_caterpillar(S) + geom_point(
+    aes(x=x, y=Parameter),
+    data=data_frame(x=weights, Parameter=unique(S$Parameter)),
+    color="red", size=6, shape=124)
+ggsave("Weight-caterpillar.png")
+
+S2 <- S %>% group_by(Parameter) %>% summarize(
+    mean=mean(value),
+    q025=quantile(value,.025),
+    q975=quantile(value,.975),
+    q25=quantile(value,.25),
+    q75=quantile(value,.75)) %>% ungroup
+
+ggplot(S2) + aes(x=Parameter, y=mean, group=NA) +
+    geom_ribbon(aes(ymin=q025, ymax=q975), alpha=.1) +
+    geom_ribbon(aes(ymin=q25, ymax=q75), alpha=.3) +
+    geom_line(color="blue", size=1, linetype=3, alpha=.8) +
+    geom_point(
+        aes(y=x),
+        data=data_frame(x=weights, Parameter=unique(S$Parameter)),
+        color="red", size=2)
+ggsave("Weight-fit.png")
+
+
 ggs_autocorrelation(S)
+ggsave("Weight-autocorrelation.png")
 ggs_crosscorrelation(S)
+ggsave("Weight-crosscorrelation.png")
 
 # Reparameterization of Dirichlet to formulate priors
 # see Reparameterization of Dirichlet Priors (Stan Manual p282)
