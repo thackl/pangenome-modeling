@@ -1352,12 +1352,11 @@ fc1 <- foo(ng, rho1, theta1) %>% tbl_df %>% mutate(n=1:ng)
 bind_rows(.id="set", ref=fc0, me=fc1) %>%
     ggplot() + aes(x=n, y=value, fill=set) + geom_col(position="dodge")
 
-model_stan_compiled <- stan_model("foo.stan")
-
-model <- sampling(
-    model_stan_compiled,
-    algorithm="Fixed_param",
-    iter = 1, chains=1, data=list(K=ng, rho=rho1, theta=theta1))
+## model_stan_compiled <- stan_model("foo.stan")
+## model <- sampling(
+##    model_stan_compiled,
+##     algorithm="Fixed_param",
+##     iter = 1, chains=1, data=list(K=ng, rho=rho1, theta=theta1))
 
 
 
@@ -1377,16 +1376,29 @@ ggs_traceplot(S) + facet_wrap(~Parameter, ncol=5)
 ggs_caterpillar(S)
 
 
+S2 <- S %>% spread(Parameter, value) %>%
+    apply(1, function(r) foo(ng, r[3], r[4]) %>% tbl_df %>% mutate(n=1:ng, ic=paste0(r[1], r[2]))) %>% bind_rows
+
+
 fit <- data_frame(
     x=1:10,
     ymin=foo(10, .49, 197.10),
     ymed=foo(10, .50, 199.95),
     ymax=foo(10, .51, 202.95))
 
-bind_rows(.id="set", ref=fc0, me=fc1) %>%
-    ggplot() + aes(x=n, y=value, fill=set) + geom_col(position="dodge") +
-    geom_pointrange(data=fit, aes(x, ymed, ymin=ymin, ymax=ymax, fill=NA))
+theme_set(theme_bw())
 
+bind_rows(.id="set", ref=fc0, me=fc1) %>%
+    ggplot() +
+    geom_col(aes(x=n, y=value, fill=set), position="dodge") +
+    geom_pointrange(data=fit, aes(x, ymed, ymin=ymin, ymax=ymax)) +
+    geom_line(data=S2, aes(x=n, y=value, group=ic), alpha=.02, color="grey30") +
+    geom_line(data=fit, aes(x, y=ymin), color="blue") +
+    geom_line(data=fit, aes(x, y=ymax), color="blue") +
+    geom_line(data=fit, aes(x, y=ymed), color="red") 
+
+
+ggsave("img-freqspec-stan-fit-01.png")
 
 ################################################################################
 ## Priors
@@ -1425,11 +1437,5 @@ d0 <- bind_rows(
 
 
 ggplot(d0) + aes(x,y,color=dist) + geom_line() + ylim(0,NA)
-#+END_SRC
-
-#+BEGIN_SRC stan
-data {
-
-}
 #+END_SRC
 
