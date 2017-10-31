@@ -1,3 +1,4 @@
+
 // number of genomes == number of components == K
 // number of genes (COGs) == N
 // number genomes gene was seen in: observation

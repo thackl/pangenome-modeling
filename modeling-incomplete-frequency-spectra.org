@@ -1254,7 +1254,7 @@ dr
 triangle.plot(dr, min3=c(0,0,0), max3=c(1,1,1))
 #+END_SRC
 
-*** REJC Simulate data from Stan - doesn't work with mixture models that only increment likelyhoods desities
+*** REJC Simulate data from Stan - doesn't work with mixture models that only increment likelyhood desities
     CLOSED: [2017-10-24 Tue 14:56]
 
 #+BEGIN_SRC R
@@ -1300,6 +1300,7 @@ incomplete data via Bayesian Inference is the choice and parameterization of the
 priors. Ideally, one would like to estimate the IMG gene gain/loss parameter
 directly, and mixing rates of the underlying binomials only indirectly.
 
+**** Estimating rho and weights, lacks theta - scaling param that is non-identifiable from normalized spectra
 IMG:
 - gain rate :: mu
 - loss rate :: nu
@@ -1362,6 +1363,14 @@ fc0 <- f.coalescent.spec(c(rho1, theta1), ng) %>% tbl_df %>% mutate(n=1:ng)
 ggplot(fc0) + aes(x=n, y=value) + geom_col()
 
 
+## the relation of theta, rho, ng, and total number of individual genes
+ng=15
+rho=0.05
+theta=1300
+theta*ng/rho
+cbind(1:ng, foo(ng, rho, theta)) %>% apply(1, prod) %>% sum
+
+
 ##---------------------------------------------------
 
 foo <- function(K, rho1, theta1) {
@@ -1390,7 +1399,8 @@ fc0
 ##     iter = 1, chains=1, data=list(K=ng, rho=rho1, theta=theta1))
 
 
-
+## THIS MODEL READS a frequency spectrum of gene family sizes, not the raw sizes
+## for each family!!!
 model_stan_compiled <- stan_model("img-freqspec-coalescent.stan")
 #model_stan_compiled <- readRDS("img-freqspec-coalescent.rds")
 
@@ -1430,7 +1440,7 @@ bind_rows(.id="set", ref=fc0, me=fc1) %>%
 #    geom_line(data=S2, aes(x=n, y=value, group=ic), alpha=.02, color="grey30") +
     geom_line(data=fit, aes(x, y=ymin), color="blue") +
     geom_line(data=fit, aes(x, y=ymax), color="blue") +
-    geom_line(data=fit, aes(x, y=ymed), color="red") 
+    geom_line(data=fit, aes(x, y=ymed), color="red")
 
 
 ggsave("img-freqspec-stan-fit-01.png")
@@ -1459,6 +1469,21 @@ fd <- bind_rows(
     "p80"=fc2 %>% group_by(y) %>% summarize(n=n()) %>%
     select(value=n, n=y))
 
+
+fc1 %>% mutate(prod=value*n) %>% summarize(total=sum(prod))
+fc2 %>% group_by(y) %>% summarize(n=n()) %>% select(value=n, n=y) %>%
+    mutate(prod=value*n) %>% summarize(total=sum(prod))
+
+k <- replicate(1000,
+rbinoX(round(sum(fc1$value)), 1:10, .8, fc1$value, df=T) %>%
+    group_by(y) %>% summarize(n=n()) %>% select(value=n, n=y) %>%
+    mutate(prod=value*n) %>% summarize(total=sum(prod)))
+k <- k %>% unlist
+
+summary(k)
+ggplot(data_frame(x=k)) + aes(x) + geom_histogram() + geom_vline(xintercept=4000*.8) + geom_line(aes(x, y), data_frame(x=2800:3500, y=dpois(2800:3500, 4000 *.8) * 20000), color="red")
+
+
 fit <- data_frame(
     x=1:10,
     ymed=foo(10, median(S %>% filter(Parameter=="rho") %>% pull(value)),
@@ -1482,7 +1507,7 @@ ggplot(data=fd) +
     geom_col(aes(x=n, y=value, fill=set), position=position_dodge(preserve = "single")) +
     geom_line(data=fit, aes(x, y=ymin), color="blue") +
     geom_line(data=fit, aes(x, y=ymax), color="blue") +
-    geom_line(data=fit, aes(x, y=ymed), color="red") 
+    geom_line(data=fit, aes(x, y=ymed), color="red")
 
 
 library(magrittr)
@@ -1537,3 +1562,120 @@ d0 <- bind_rows(
 ggplot(d0) + aes(x,y,color=dist) + geom_line() + ylim(0,NA)
 #+END_SRC
 
+**** Estimating rho, theta and weights
+
+#+BEGIN_SRC R
+library(tidyverse)
+theme_set(theme_bw())
+library(rstan)
+library(ggmcmc)
+rstan_options(auto_write = TRUE)
+options(mc.cores = parallel::detectCores())
+
+img_fs_coalescent <- function(K, rho1, tau1, df=FALSE) {
+    spec <- (1:K)*0
+    specprod1 <- (K+1 - 1:K)/(K+rho1 - 1:K)
+    for (k in 1:K) spec[k] <- (tau1/k) * prod(specprod1[1:k])
+    if (df) data_frame(count=1:K, frequency=spec) else spec
+}
+
+#' @param n total number of observations
+#' @param sizes number of trials for each component (single value will be recycled)
+#' @param probs probabilities of success for each component (single value will be recycled)
+#' @param weights of components, i.e. proportion of observation from total. Values will be normalized to sum to 1. Single values will be recycled.
+#' 'size','prob' and 'weight'
+#' @param df if TRUE, return data.frame including parameters used to simulate
+#' each outcome.
+rbinoX <- function(n, sizes, probs, weights=NULL, df=FALSE){
+    if(is.null(weights)) weights <- 1
+    cns <- sapply(list(sizes, probs, weights), length)
+    cn <- max(cns)
+
+    if(any(cns!=cn & cns!=1)) stop("sizes, probs and weights lengths differ. Need to either be the same or 1 (recycling)")
+
+    if(length(sizes)==1) sizes <- rep(sizes, cn)
+    if(length(probs)==1) probs <- rep(probs, cn)
+    if(length(weights)==1) weights <- rep(weights, cn)
+
+    r <- t(sapply(sample(1:cn, n, replace=TRUE, prob=weights), function(ci){
+        c(sizes[ci], probs[ci], weights[ci], rbinom(1, sizes[ci], probs[ci]))}))
+    if(df){
+        r <- as.data.frame(r)
+        colnames(r) <- c("size", "prob","weight","y")
+        r
+    }else{r[,4]}
+}
+
+f2c <- function(y, df=FALSE){
+    x <- unlist(apply(y, 1, function(r) rep(r[1], r[2])))
+    names(x) <- c()
+    if (df) data_frame(gene=1:length(x), count=x) else x
+}
+
+c2f <- function(x, df=FALSE){
+    y <- if (is.null(dim(x))) table(x) else table(x[,2])
+    if (df) data_frame(count=names(y), frequency=as.vector(y)) else y
+}
+
+# N : number of genes (== gene families)
+# K : number of genomes
+# T : total gene counts
+
+# x : gene counts (1..N), T = sum(x)
+# y : gene count frequencies (1..K)
+
+# rho (rho1) : rate of loosing a single gene with time units 2N_e
+# tau (tau1) : average number of genes gained in 2N_e
+
+K <- 20;
+rho <- .5;
+tau <- 200;
+y <- img_fs_coalescent(K, rho, tau, TRUE)
+T <- sum(apply(y, 1, prod))
+x <- f2c(y, T)
+N <- nrow(x)
+c <- .8
+
+x80 <- rbinoX(N, 1:K, .8, y$frequency) %>% tbl_df %>%
+    filter(value != 0) %>%
+    arrange(value) %>%
+    mutate(gene=row_number()) %>%
+    select(gene, count=value)
+
+## binom mic
+img_bm <- stan_model("img-coalescent-binom-mix-02.stan")
+#img_bm <- readRDS("img-coalescent-binom-mix.rds")
+
+d100 <- list( N=nrow(x), K=K, x=x$count, c=rep(.9999, K))
+m_img_bm <- sampling(img_bm, iter = 1000, chains=4, data=d100)
+
+d080 <- list( N=nrow(x80), K=K, x=x80$count, c=rep(.80, K))
+m_img_bm <- sampling(img_bm, iter = 1000, chains=4, data=d080)
+
+print(m_img_bm)
+S <- ggs(m_img_bm)
+ggs_traceplot(S) + facet_wrap(~Parameter, ncol=5, scales="free_y")
+ggs_caterpillar(S)
+
+fit <- data_frame(
+    x=1:K,
+    ymed=img_fs_coalescent(K,
+        median(S %>% filter(Parameter=="rho") %>% pull(value)),
+        median(S %>% filter(Parameter=="tau") %>% pull(value))),
+    ymin=img_fs_coalescent(K,
+        quantile(S %>% filter(Parameter=="rho") %>% pull(value),.025),
+        quantile(S %>% filter(Parameter=="tau") %>% pull(value),.025)),
+    ymax=img_fs_coalescent(K,
+        quantile(S %>% filter(Parameter=="rho") %>% pull(value),.975),
+        quantile(S %>% filter(Parameter=="tau") %>% pull(value),.975)))
+
+ggplot(data=y) +
+    geom_col(aes(x=count, y=frequency), position=position_dodge(preserve = "single")) +
+    geom_line(data=fit, aes(x, y=ymin), color="blue") +
+    geom_line(data=fit, aes(x, y=ymax), color="blue") +
+    geom_line(data=fit, aes(x, y=ymed), color="red")
+#+END_SRC
+
+****
+**** Estimating rho1/2, theta1/2, weights and core
+**** Fitting real data
