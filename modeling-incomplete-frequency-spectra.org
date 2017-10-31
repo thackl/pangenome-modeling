@@ -1310,10 +1310,39 @@ in scaled coalescent units:
 
 #+BEGIN_SRC R
 library(tidyverse)
+theme_set(theme_bw())
 library(rstan)
 library(ggmcmc)
 rstan_options(auto_write = TRUE)
 options(mc.cores = parallel::detectCores())
+
+#' @param n total number of observations
+#' @param sizes number of trials for each component (single value will be recycled)
+#' @param probs probabilities of success for each component (single value will be recycled)
+#' @param weights of components, i.e. proportion of observation from total. Values will be normalized to sum to 1. Single values will be recycled.
+#' 'size','prob' and 'weight'
+#' @param df if TRUE, return data.frame including parameters used to simulate
+#' each outcome.
+rbinoX <- function(n, sizes, probs, weights=NULL, df=FALSE){
+    if(is.null(weights)) weights <- 1
+    cns <- sapply(list(sizes, probs, weights), length)
+    cn <- max(cns)
+
+    if(any(cns!=cn & cns!=1)) stop("sizes, probs and weights lengths differ. Need to either be the same or 1 (recycling)")
+
+    if(length(sizes)==1) sizes <- rep(sizes, cn)
+    if(length(probs)==1) probs <- rep(probs, cn)
+    if(length(weights)==1) weights <- rep(weights, cn)
+
+    r <- t(sapply(sample(1:cn, n, replace=TRUE, prob=weights), function(ci){
+        c(sizes[ci], probs[ci], weights[ci], rbinom(1, sizes[ci], probs[ci]))}))
+    if(df){
+        r <- as.data.frame(r)
+        colnames(r) <- c("size", "prob","weight","y")
+        r
+    }else{r[,4]}
+}
+
 
 ## Collins, R. E., & Higgs, P. G. (2012). Testing the infinitely many genes model for the evolution of the bacterial core genome and pangenome. Molecular Biology and Evolution, 29(11), 3413–3425.
 source("../pangenome-infinitely-many-genes/f-pangenome.R")
@@ -1352,6 +1381,8 @@ fc1 <- foo(ng, rho1, theta1) %>% tbl_df %>% mutate(n=1:ng)
 bind_rows(.id="set", ref=fc0, me=fc1) %>%
     ggplot() + aes(x=n, y=value, fill=set) + geom_col(position="dodge")
 
+
+fc0
 ## model_stan_compiled <- stan_model("foo.stan")
 ## model <- sampling(
 ##    model_stan_compiled,
@@ -1361,12 +1392,13 @@ bind_rows(.id="set", ref=fc0, me=fc1) %>%
 
 
 model_stan_compiled <- stan_model("img-freqspec-coalescent.stan")
+#model_stan_compiled <- readRDS("img-freqspec-coalescent.rds")
 
 m_img_coal_1 <- sampling(
     model_stan_compiled,
     iter = 1000, chains=4,
     data=list(
-        N=nrow(fc1), y=sample(fc1$value), K=ng))
+        N=nrow(fc1), y=fc1$value, K=ng))
 
 
 model <- m_img_coal_1
@@ -1376,29 +1408,95 @@ ggs_traceplot(S) + facet_wrap(~Parameter, ncol=5)
 ggs_caterpillar(S)
 
 
-S2 <- S %>% spread(Parameter, value) %>%
-    apply(1, function(r) foo(ng, r[3], r[4]) %>% tbl_df %>% mutate(n=1:ng, ic=paste0(r[1], r[2]))) %>% bind_rows
-
+## S2 <- S %>% spread(Parameter, value) %>%
+##     apply(1, function(r) foo(ng, r[3], r[4]) %>% tbl_df %>% mutate(n=1:ng, ic=paste0(r[1], r[2]))) %>% bind_rows
 
 fit <- data_frame(
     x=1:10,
-    ymin=foo(10, .49, 197.10),
-    ymed=foo(10, .50, 199.95),
-    ymax=foo(10, .51, 202.95))
+    ymed=foo(10, median(S %>% filter(Parameter=="rho") %>% pull(value)),
+        median(S %>% filter(Parameter=="theta") %>% pull(value))),
+    ymin=foo(10, quantile(S %>% filter(Parameter=="rho") %>% pull(value),.025),
+        median(S %>% filter(Parameter=="theta") %>% pull(value))),
+    ymax=foo(10, quantile(S %>% filter(Parameter=="rho") %>% pull(value),.975),
+        median(S %>% filter(Parameter=="theta") %>% pull(value)))
+)
 
-theme_set(theme_bw())
+
 
 bind_rows(.id="set", ref=fc0, me=fc1) %>%
     ggplot() +
     geom_col(aes(x=n, y=value, fill=set), position="dodge") +
     geom_pointrange(data=fit, aes(x, ymed, ymin=ymin, ymax=ymax)) +
-    geom_line(data=S2, aes(x=n, y=value, group=ic), alpha=.02, color="grey30") +
+#    geom_line(data=S2, aes(x=n, y=value, group=ic), alpha=.02, color="grey30") +
     geom_line(data=fit, aes(x, y=ymin), color="blue") +
     geom_line(data=fit, aes(x, y=ymax), color="blue") +
     geom_line(data=fit, aes(x, y=ymed), color="red") 
 
 
 ggsave("img-freqspec-stan-fit-01.png")
+
+
+## binom mic
+img_bm <- stan_model("img-coalescent-binom-mix.stan")
+#img_bm <- readRDS("img-coalescent-binom-mix.rds")
+
+fc2 <- rbinoX(round(sum(fc1$value)), 1:10, .8, fc1$value, df=T)
+
+m_img_bm <- sampling(
+    img_bm,
+    iter = 1000, chains=1,
+    data=list(
+        N=nrow(fc2), y=fc2$y, K=ng,
+        sizes=1:ng, probs=rep(.8, ng)))
+
+print(m_img_bm)
+S <- ggs(m_img_bm)
+ggs_traceplot(S) + facet_wrap(~Parameter, ncol=5)
+ggs_caterpillar(S)
+
+fd <- bind_rows(
+    .id="set", ref=fc1,
+    "p80"=fc2 %>% group_by(y) %>% summarize(n=n()) %>%
+    select(value=n, n=y))
+
+fit <- data_frame(
+    x=1:10,
+    ymed=foo(10, median(S %>% filter(Parameter=="rho") %>% pull(value)),
+        #        median(S %>% filter(Parameter=="theta") %>% pull(value))),
+        200),
+    ymin=foo(10, quantile(S %>% filter(Parameter=="rho") %>% pull(value),.025),
+        #        median(S %>% filter(Parameter=="theta") %>% pull(value))),
+                200),
+    ymax=foo(10, quantile(S %>% filter(Parameter=="rho") %>% pull(value),.975),
+        #        median(S %>% filter(Parameter=="theta") %>% pull(value)))
+                200)
+)
+
+fit
+
+#    ymed=foo(10, .50, 199.95),
+#    ymax=foo(10, .51, 202.95))
+
+
+ggplot(data=fd) +
+    geom_col(aes(x=n, y=value, fill=set), position=position_dodge(preserve = "single")) +
+    geom_line(data=fit, aes(x, y=ymin), color="blue") +
+    geom_line(data=fit, aes(x, y=ymax), color="blue") +
+    geom_line(data=fit, aes(x, y=ymed), color="red") 
+
+
+library(magrittr)
+
+params <- data_frame(
+    rho=c(0.1, 0.25, 0.1, 0.25),
+    theta = c(100, 100, 200, 200))
+
+t1 <- apply(params, 1, function(r){ z <- foo(10,r[1], r[2]); z/sum(z) }) %>%
+    tbl_df %>% set_colnames(paste(params$rho, params$theta)) %>% mutate( n=row_number()) %>%
+    gather(key="rho_theta", value="value", -n)
+
+ggplot(t1) + aes(x=n, y=value, color=rho_theta) + geom_line(aes(linetype=rho_theta))
+
 
 ################################################################################
 ## Priors
