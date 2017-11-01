@@ -1572,10 +1572,11 @@ library(ggmcmc)
 rstan_options(auto_write = TRUE)
 options(mc.cores = parallel::detectCores())
 
-img_fs_coalescent <- function(K, rho1, tau1, df=FALSE) {
+img_fs_coalescent <- function(K, rho1, tau1, gess=0, df=FALSE) {
     spec <- (1:K)*0
     specprod1 <- (K+1 - 1:K)/(K+rho1 - 1:K)
     for (k in 1:K) spec[k] <- (tau1/k) * prod(specprod1[1:k])
+    spec[K] <- spec[K] + gess
     if (df) data_frame(count=1:K, frequency=spec) else spec
 }
 
@@ -1627,10 +1628,10 @@ c2f <- function(x, df=FALSE){
 # rho (rho1) : rate of loosing a single gene with time units 2N_e
 # tau (tau1) : average number of genes gained in 2N_e
 
-K <- 20;
+K <- 10;
 rho <- .5;
 tau <- 200;
-y <- img_fs_coalescent(K, rho, tau, TRUE)
+y <- img_fs_coalescent(K, rho, tau, df=TRUE)
 T <- sum(apply(y, 1, prod))
 x <- f2c(y, T)
 N <- nrow(x)
@@ -1640,21 +1641,24 @@ x80 <- rbinoX(N, 1:K, .8, y$frequency) %>% tbl_df %>%
     filter(value != 0) %>%
     arrange(value) %>%
     mutate(gene=row_number()) %>%
-    select(gene, count=value)
+    dplyr::select(gene, count=value)
 
 ## binom mic
-img_bm <- stan_model("img-coalescent-binom-mix-02.stan")
+img_bm02
+img_bm <- stan_model("img-coalescent-binom-mix-03.stan")
+img_bm03 <- img_bm
 #img_bm <- readRDS("img-coalescent-binom-mix.rds")
 
 d100 <- list( N=nrow(x), K=K, x=x$count, c=rep(.9999, K))
-m_img_bm <- sampling(img_bm, iter = 1000, chains=4, data=d100)
+d100
+m_img_bm <- sampling(img_bm, iter = 500, chains=3, data=d100)
 
 d080 <- list( N=nrow(x80), K=K, x=x80$count, c=rep(.80, K))
-m_img_bm <- sampling(img_bm, iter = 1000, chains=4, data=d080)
+m_img_bm <- sampling(img_bm, iter = 500, chains=3, data=d080)
 
 print(m_img_bm)
 S <- ggs(m_img_bm)
-ggs_traceplot(S) + facet_wrap(~Parameter, ncol=5, scales="free_y")
+ggs_traceplot(S) + facet_wrap(~Parameter, ncol=1, scales="free_y")
 ggs_caterpillar(S)
 
 fit <- data_frame(
@@ -1676,6 +1680,52 @@ ggplot(data=y) +
     geom_line(data=fit, aes(x, y=ymed), color="red")
 #+END_SRC
 
-****
+**** Construct Dirichlet prior from IMG freq spectrum
+ 
+#+BEGIN_SRC R
+library(tidyverse)
+library(magrittr)
+library(MCMCpack)
+
+img_fs_coalescent <- function(K, rho1, tau1, gess=0, df=FALSE) {
+    spec <- (1:K)*0
+    specprod1 <- (K+1 - 1:K)/(K+rho1 - 1:K)
+    for (k in 1:K) spec[k] <- (tau1/k) * prod(specprod1[1:k])
+    spec[K] <- spec[K] + gess
+    if (df) data_frame(count=1:K, frequency=spec) else spec
+}
+
+K <- 10
+rho <- .5,
+tau <- 20
+fs <- img_fs_coalescent(K, rho, tau)
+
+kappa <- 1000         # weights
+phi <- fs/sum(fs)     # expected relative mean freqs
+alpha = kappa * phi
+
+rfs <- data_frame(prob=fs/sum(fs), cat=sprintf("%03d",1:K))
+dr <- rdirichlet(1000, alpha) %>% tbl_df %>%
+    set_colnames(sprintf("%03d",1:K)) %>%
+    gather("cat", "prob")
+
+ggplot(dr) + aes(y=prob, x=cat, fill=cat) + geom_boxplot() +
+    geom_point(data=rfs)
+
+
+lambdas <- matrix(c(
+    0.0419876,0.0180973,0.154338,0.403514,0.20848,0.0491288,0.0292669,0.0121678,0.017921,0.0650986,
+    0.0148997,0.105448,0.0268778,0.223929,0.108628,0.05415,0.0620618,0.0419299,0.295009,0.0670672,
+    0.266975,0.168605,0.0126078,0.283949,0.0608623,0.0597973,0.0184083,0.0494776,0.0382478,0.0410704,
+    0.0287053,0.0320149,0.250389,0.246487,0.0187187,0.0324918,0.108055,0.0901247,0.123494,0.0695204,
+    0.0729181,0.248926,0.0781635,0.103866,0.213705,0.00951561,0.0121616,0.197069,0.0203873,0.043288,
+    0.122415,0.334449,0.241238,0.0751331,0.0950512,0.0114062,0.0266597,0.0639929,0.0237863,0.00586927), ncol=6) %>% t() %>% tbl_df %>%
+    set_colnames(sprintf("%03d",1:K)) %>%
+    gather("cat", "prob")
+
+ggplot(lambdas) + aes(y=prob, x=cat, fill=cat) + geom_boxplot() 
+#+END_SRC
+
+
 **** Estimating rho1/2, theta1/2, weights and core
 **** Fitting real data
