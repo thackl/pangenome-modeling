@@ -1294,7 +1294,13 @@ a2 <- as.array(fit2)
 a2 %>% tbl_df
 #+END_SRC
 
-*** IMG in Stan
+*** REJC IMG in Stan
+    CLOSED: [2017-11-07 Tue 15:17]
+*This doesn't work* - my approach of estimating a mixed model using some form of
+IMG-derived prior doesn't work, because - I don't really know. But it is clear
+that the sequential binomial mixture models cannot be robustly fitted, and rho
+(& theta) values for incomplete data are always off.
+
 The biggest problem with robustly modeling the true frequency spectrum from
 incomplete data via Bayesian Inference is the choice and parameterization of the
 priors. Ideally, one would like to estimate the IMG gene gain/loss parameter
@@ -1564,6 +1570,9 @@ ggplot(d0) + aes(x,y,color=dist) + geom_line() + ylim(0,NA)
 
 **** Estimating rho, theta and weights
 
+This is somehow off. My rho estimates for incomplete data are always too low -
+and I don't really understand what is going on..
+
 #+BEGIN_SRC R
 library(tidyverse)
 theme_set(theme_bw())
@@ -1637,7 +1646,17 @@ x <- f2c(y, T)
 N <- nrow(x)
 c <- .8
 
-x80 <- rbinoX(N, 1:K, .8, y$frequency) %>% tbl_df %>%
+data_frame(fs=y$frequency/sum(y$frequency)) %>% bind_cols(
+               rstan::summary(m_img_bm, pars=c("phi"))$summary %>% tbl_df %>% dplyr::select(phi=mean),
+               rstan::summary(m_img_bm, pars=c("lambda"))$summary %>% tbl_df %>% dplyr::select(lambda=mean))
+
+ x80 <- rbinoX(N, 1:K, .8, y$frequency) %>% tbl_df %>%
+    filter(value != 0) %>%
+    arrange(value) %>%
+    mutate(gene=row_number()) %>%
+    dplyr::select(gene, count=value)
+
+x50 <- rbinoX(N, 1:K, .5, y$frequency) %>% tbl_df %>%
     filter(value != 0) %>%
     arrange(value) %>%
     mutate(gene=row_number()) %>%
@@ -1656,9 +1675,12 @@ m_img_bm <- sampling(img_bm, iter = 500, chains=3, data=d100)
 d080 <- list( N=nrow(x80), K=K, x=x80$count, c=rep(.80, K))
 m_img_bm <- sampling(img_bm, iter = 500, chains=3, data=d080)
 
+d050 <- list( N=nrow(x50), K=K, x=x50$count, c=rep(.50, K))
+m_img_bm <- sampling(img_bm, iter = 500, chains=3, data=d050)
+
 print(m_img_bm)
 S <- ggs(m_img_bm)
-ggs_traceplot(S) + facet_wrap(~Parameter, ncol=1, scales="free_y")
+ggs_traceplot(S %>% filter(Parameter %in% c("rho", "tau", "T"))) + facet_wrap(~Parameter, ncol=3, scales="free_y", strip.position="left")
 ggs_caterpillar(S)
 
 fit <- data_frame(
@@ -1680,8 +1702,9 @@ ggplot(data=y) +
     geom_line(data=fit, aes(x, y=ymed), color="red")
 #+END_SRC
 
-**** Construct Dirichlet prior from IMG freq spectrum
- 
+**** REJC Construct Dirichlet prior from IMG freq spectrum
+     CLOSED: [2017-11-07 Tue 15:16]
+
 #+BEGIN_SRC R
 library(tidyverse)
 library(magrittr)
@@ -1696,8 +1719,8 @@ img_fs_coalescent <- function(K, rho1, tau1, gess=0, df=FALSE) {
 }
 
 K <- 10
-rho <- .5,
-tau <- 20
+rho <- .5
+tau <- 200
 fs <- img_fs_coalescent(K, rho, tau)
 
 kappa <- 1000         # weights
@@ -1708,7 +1731,6 @@ rfs <- data_frame(prob=fs/sum(fs), cat=sprintf("%03d",1:K))
 dr <- rdirichlet(1000, alpha) %>% tbl_df %>%
     set_colnames(sprintf("%03d",1:K)) %>%
     gather("cat", "prob")
-
 ggplot(dr) + aes(y=prob, x=cat, fill=cat) + geom_boxplot() +
     geom_point(data=rfs)
 
@@ -1723,9 +1745,202 @@ lambdas <- matrix(c(
     set_colnames(sprintf("%03d",1:K)) %>%
     gather("cat", "prob")
 
-ggplot(lambdas) + aes(y=prob, x=cat, fill=cat) + geom_boxplot() 
+ggplot(lambdas) + aes(y=prob, x=cat, fill=cat) + geom_boxplot()
+#+END_SRC
+
+**** REJC write a binomial_mixture_lpmf
+     CLOSED: [2017-11-07 Tue 11:55]
+file:binom-mix-lpmf.stan
+
+#+BEGIN_SRC R
+library(tidyverse)
+library(rstan)
+# need to understand stan matrices (or 2-dimensional arrays)
+rstan_options(auto_write = TRUE)
+options(mc.cores = parallel::detectCores())
+
+sm <- stan_model("binom-mix-lpmf.stan")
+
+fit <- sampling(sm, iter=1, chain=1,  algorithm="Fixed_param")
+
+sc <-'
+functions {
+  // IMG coalescent frequency spectrum
+  vector fs_coalescent(int K, real rho, real tau){
+    vector[K] fs = rep_vector(0, K);    // freq spectrum
+    vector[K] fsp;                      // freq product
+    for(k in 1:K)                       // cache prod series
+      fsp[k] = (K+1 - k)/(K+rho - k);
+    for(k in 1:K)                       // summarize series with length 1,2,...,k
+      fs[k] = tau/k * prod(segment(fsp, 1, k));
+    return fs;
+  }
+}
+model{
+  print(fs_coalescent(10, .5, 200))
+}
+'
+
+sm <- stan_model(model_code=sc)
+fit <- sampling(sm, iter=1, chain=1,  algorithm="Fixed_param")
+#+END_SRC
+
+**** REJC model IMG frequency spectrum with binomial in estimate
+     CLOSED: [2017-11-07 Tue 15:20]
+Go the other way - start with IMG estimate, model with incomplete, fit to data...
+
+#+BEGIN_SRC R
+library(tidyverse)
+theme_set(theme_bw())
+library(rstan)
+library(ggmcmc)
+rstan_options(auto_write = TRUE)
+options(mc.cores = parallel::detectCores())
+
+img_fs_coalescent <- function(K, rho1, tau1, gess=0, df=FALSE) {
+    spec <- (1:K)*0
+    specprod1 <- (K+1 - 1:K)/(K+rho1 - 1:K)
+    for (k in 1:K) spec[k] <- (tau1/k) * prod(specprod1[1:k])
+    spec[K] <- spec[K] + gess
+    if (df) data_frame(count=1:K, frequency=spec) else spec
+}
+
+
+f2c <- function(y, df=FALSE){
+    x <- unlist(apply(y, 1, function(r) rep(r[1], r[2])))
+    names(x) <- c()
+    if (df) data_frame(gene=1:length(x), count=x) else x
+}
+
+c2f <- function(x, df=FALSE){
+    y <- if (is.null(dim(x))) table(x) else table(x[,2])
+    if (df) data_frame(count=names(y), frequency=as.vector(y)) else y
+}
+
+# N : number of genes (== gene families)
+# K : number of genomes
+# T : total gene counts
+
+# x : gene counts (1..N), T = sum(x)
+# y : gene count frequencies (1..K)
+
+# rho (rho1) : rate of loosing a single gene with time units 2N_e
+# tau (tau1) : average number of genes gained in 2N_e
+
+K <- 10;
+rho <- .5;
+tau <- 200;
+y <- img_fs_coalescent(K, rho, tau, df=TRUE) %>% round
+T <- sum(apply(y, 1, prod))
+x <- f2c(y, T)
+N <- nrow(x)
+c <- .8
+
+
+
+y80 <- y %>% round %>% apply(1, function(r){
+    k <- r[1]
+    freq <- r[2]
+    rbinom(freq, k, c) %>% table %>% tbl_df %>%
+        select(count=1, frequency=2)}) %>%
+        reduce(full_join, by = "count") %>%
+        mutate(frequency=rowSums(select(., -count), na.rm=T)) %>%
+        select(count, frequency)
+
+x80 <- f2c(y80, T)
+
+img_bm <- stan_model("img-coalescent-binom-mix-04.stan")
+
+d100 <- list(K=K, N=N, x=x$count, c=.999)
+m_img_bm <- sampling(img_bm, iter = 1, chains=1, data=d100)
+
+d080 <- list( K=K, N=nrow(x80), x=x80$count, c=.8)
+m_img_bm <- sampling(img_bm, iter = 500, chains=3, data=d080)
+
+d050 <- list( N=nrow(x50), K=K, x=x50$count, c=rep(.50, K))
+m_img_bm <- sampling(img_bm, iter = 500, chains=3, data=d050)
+
+print(m_img_bm)
+S <- ggs(m_img_bm)
+ggs_traceplot(S %>% filter(Parameter %in% c("rho", "tau", "T"))) + facet_wrap(~Parameter, ncol=3, scales="free_y", strip.position="left")
+ggs_caterpillar(S)
+
+fit <- data_frame(
+    x=1:K,
+    ymed=img_fs_coalescent(K,
+        median(S %>% filter(Parameter=="rho") %>% pull(value)),
+        median(S %>% filter(Parameter=="tau") %>% pull(value))),
+    ymin=img_fs_coalescent(K,
+        quantile(S %>% filter(Parameter=="rho") %>% pull(value),.025),
+        quantile(S %>% filter(Parameter=="tau") %>% pull(value),.025)),
+    ymax=img_fs_coalescent(K,
+        quantile(S %>% filter(Parameter=="rho") %>% pull(value),.975),
+        quantile(S %>% filter(Parameter=="tau") %>% pull(value),.975)))
+
+ggplot(data=y) +
+    geom_col(aes(x=count, y=frequency), position=position_dodge(preserve = "single")) +
+    geom_line(data=fit, aes(x, y=ymin), color="blue") +
+    geom_line(data=fit, aes(x, y=ymax), color="blue") +
+    geom_line(data=fit, aes(x, y=ymed), color="red")
+#+END_SRC
+
+**** REJC another look at a simple binom mix
+     CLOSED: [2017-11-07 Tue 15:22]
+
+#+BEGIN_SRC R
+library(tidyverse)
+theme_set(theme_bw())
+library(rstan)
+rstan_options(auto_write = TRUE)
+options(mc.cores = parallel::detectCores())
+
+
+scode <- '
+data {
+  int K;
+  int N;
+  int x[N];
+  real p;
+}
+parameters {
+  simplex[K] theta; // component weights
+}
+model {
+  real lp;
+  vector[K] log_theta;
+  log_theta = log(theta);
+  for (n in 1:N){
+    // print("");
+    for (k in x[n]:K){
+      // print(x[n], ":", k);
+      lp = binomial_lpmf(x[n] | k, p);
+      // print("lp: ", lp);
+      target += log_sum_exp(lp, log_theta[k]);
+    }
+  }
+}
+'
+
+scomp <- stan_model(model_code=scode)
+
+p <- .8
+x <- rbinom(100, 80, .8)
+x2 <- c(rbinom(500, 79, .8), rbinom(500, 81, .8))
+
+ggplot(data_frame(x=c(x, x2), g=rep("80", "79,81", each=1000))) + geom_bar(aes(x))
+
+data=list(K=100, N=length(x), x=x, p=p)
+sfit <- sampling(scomp, iter=500, chain=4, data=data)
+
+stan_plot(sfit)
+stan_trace(sfit)
+stan_scat(sfit)
+stan_hist(sfit)
+stan_dens(sfit)
+stan_ac(sfit)
 #+END_SRC
 
 
+*** More TODOs
 **** Estimating rho1/2, theta1/2, weights and core
 **** Fitting real data
