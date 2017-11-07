@@ -1940,6 +1940,351 @@ stan_dens(sfit)
 stan_ac(sfit)
 #+END_SRC
 
+*** /Regroup/ - IMG in Stan II
+**** Directly compute expected IMG spectrum given binomial process (R and Stan code)
+
+#+BEGIN_SRC R
+library(tidyverse)
+library(rstan)
+rstan_options(auto_write = TRUE)
+options(mc.cores = parallel::detectCores())
+
+
+img <- function(K, rho, theta) {
+  spec <- (1:K)*0
+  (specprod1 <- (K+1 - 1:K)/(K+rho - 1:K))
+  for (k in 1:K) {
+      spec[k] <- prod(specprod1[1:k]) * (theta/k)
+  }
+  return(spec)
+}
+
+
+bmiss <- function(x, p, with_zero=FALSE){
+    r <- x/sum(x)
+    K <- length(x)
+    dmix <- rep(0, K+1)
+    for(k in 1:K){
+        dmix[1:(k+1)] = dmix[1:(k+1)] + dbinom(0:k, k, p) * r[k]
+    }
+    if(with_zero) dmix * sum(x) else (dmix * sum(x))[-1]
+}
+
+## de-vectorized: better stan template
+bmiss2 <- function(x, p, with_zero=FALSE){
+    r <- x/sum(x)
+    K <- length(x)
+    dmix <- rep(0, K+1)
+    print(log(dmix))
+    for(k in 1:K){
+        for(j in 0:k){
+            dmix[j+1] = dmix[j+1] + dbinom(j, k, p) * r[k]
+        }
+    }
+    print(log(dmix))
+    if(with_zero) dmix * sum(x) else (dmix * sum(x))[-1]
+}
+
+bmiss_log <- function(x, p, with_zero=FALSE){
+    r <- log(x/sum(x))
+    K <- length(x)
+    lp <- rep(-Inf, K+1)
+    print(lp)
+    for(k in 1:K){
+        for(j in 0:k){
+            lp[j+1] = log(exp(lp[j+1]) + exp(dbinom(j, k, p, log=T) + r[k]))
+        }
+    }
+    print(exp(lp))
+    if(with_zero) exp(lp) * sum(x) else (exp(lp) * sum(x))[-1]
+}
+
+
+
+fs <- img(10, .5, 200); round(fs);
+fsm <- bmiss(fs, .8); round(fsm)
+fsm2 <- bmiss2(fs, .8); round(fsm2)
+fsml <- bmiss_log(fs, .8); round(fsml)
+
+
+## bmiss in Stan
+scomp <- stan_model("img-bmiss.stan")
+
+data=list(K=10, rho=.5, theta=2000, p=0.8)
+sfit <- sampling(scomp, iter=1, chain=1, data=data, algorithm="Fixed_param")
+
+sfit
+
+stan_plot(sfit)
+stan_trace(sfit)
+stan_scat(sfit)
+stan_hist(sfit)
+stan_dens(sfit)
+stan_ac(sfit)
+
+
+
+## potential extension: Poisson-Binomial (with sampling of unobserved p) to
+## account for variance in p
+library(poibin)
+
+## dmix[1:(k+1)] = dmix[1:(k+1)] + dpoibin(0:k, p) * r[k]
+
+d0 <- data_frame(x=c(
+                     rbinom(1000, 100, .6),
+                     rpoibin(1000, rep(c(.3,.9), each=50))),
+                 g=rep(c(".6", ".3/.9"), each=1000))
+
+ggplot(d0) + aes(x=x, fill=g) + geom_bar(position=position_dodge(preserve="single"))
+#+END_SRC
+
+**** Fit incomplete IMG estimate using Stan
+
+#+BEGIN_SRC R
+library(tidyverse)
+theme_set(theme_bw())
+library(rstan)
+library(ggmcmc)
+rstan_options(auto_write = TRUE)
+options(mc.cores = parallel::detectCores())
+library(magrittr)
+
+img_fs <- function(K, rho1, tau1, gess=0, df=FALSE) {
+    spec <- (1:K)*0
+    specprod1 <- (K+1 - 1:K)/(K+rho1 - 1:K)
+    for (k in 1:K) spec[k] <- (tau1/k) * prod(specprod1[1:k])
+    spec[K] <- spec[K] + gess
+    if (df) data_frame(count=1:K, frequency=spec) else spec
+}
+
+
+f2c <- function(y, df=FALSE){
+    x <- unlist(apply(y, 1, function(r) rep(r[1], r[2])))
+    names(x) <- c()
+    if (df) data_frame(gene=1:length(x), count=x) else x
+}
+
+c2f <- function(x, df=FALSE){
+    y <- if (is.null(dim(x))) table(x) else table(x[,2])
+    if (df) data_frame(count=names(y), frequency=as.vector(y)) else y
+}
+
+bmiss <- function(x, p, with_zero=FALSE){
+    r <- x/sum(x)
+    K <- length(x)
+    dmix <- rep(0, K+1)
+    for(k in 1:K){
+        dmix[1:(k+1)] = dmix[1:(k+1)] + dbinom(0:k, k, p) * r[k]
+    }
+    if(with_zero) dmix * sum(x) else (dmix * sum(x))[-1]
+}
+
+hide <- function(y, c, with_zero=FALSE){
+    K <- max(y[,1]);
+    z <- data_frame(Var1=as.character(0:K), n=0)
+
+    r <- apply(y, 1, function(r) rbinom(r[2], r[1], c)) %>%
+        map(table) %>% map(tbl_df) %>%
+        bind_rows(z) %>% select(count=Var1, frequency=n) %>%
+        group_by(count) %>% summarize(frequency=sum(frequency)) %>%
+        mutate(count=as.numeric(count)) %>% arrange(count)
+    if(with_zero) r else r %>% filter(count!=0)
+}
+
+# N : number of genes (== gene families)
+# K : number of genomes
+# T : total gene counts
+
+# x : gene counts (1..N), T = sum(x)
+# y : gene count frequencies (1..K)
+
+# rho (rho1) : rate of loosing a single gene with time units 2N_e
+# tau (tau1) : average number of genes gained in 2N_e
+
+K <- 10;
+rho <- .5;
+tau <- 500;
+y <- img_fs_coalescent(K, rho, tau, df=TRUE)
+T <- sum(apply(y, 1, prod))
+x <- f2c(y, T)
+N <- nrow(x)
+c <- .8
+
+rhos <- c(c(.5,1:10,15)/5)
+cs <- c(1, .8, .5)
+params <- data_frame(
+    rho=rep(rhos, length(cs)),
+    c=rep(cs, each=length(rhos))
+) %>%
+    merge(data_frame(K=c(10,20,100,500))) %>%
+    unite("params", everything(), remove=FALSE)
+
+## hide and bmiss generate conistent data
+img_fs(10, .5, 200, df=T) %>% hide(c) %>% select(2)
+img_fs(10, .5, 200) %>% bmiss(c)
+
+img_fs(10, .4, .3) %T>% print  %>% bmiss(c)
+
+
+set.seed(1337)
+f0 <- params %>% split(.$params) %>%
+    map_dfr(function(p){
+        merge(p, img_fs(p$K, p$rho, tau, df=TRUE)
+              %>% hide(p$c))}) %>% tbl_df
+
+m0 <- params %>% split(.$params) %>%
+    map_dfr(function(p){
+        merge(p, img_fs(p$K, p$rho, tau) %>%
+                  bmiss(p$c) %>%
+                  data_frame(count=1:length(.), frequency=.))}) %>% tbl_df
+
+f0
+m0
+
+d0 <- bind_rows(
+    .id="set",
+    sim=f0,
+    exp=m0)
+
+
+ggplot(d0) +
+    geom_line(data=m0, aes(x=count, y=frequency, color=as.factor(rho))) +
+    geom_point(data=f0, aes(x=count, y=frequency, color=as.factor(rho))) +
+    #scale_y_log10(limits=c(1e-2, NA)) +
+    #geom_hline(yintercept=tau) +
+    facet_grid(c~K, scales="free_x")
+
+ggsave("rho.png")
+
+f0 <- params %>% split(.$params) %>%
+    map_dfr(function(p){
+        merge(p, img_fs_coalescent(p$K, p$rho, tau, df=TRUE)
+              %>% hide(p$c))}) %>% tbl_df
+
+
+## STAN
+
+d0 <- params %>% split(.$params) %>%
+    map_dfr(function(p){
+        merge(p, img_fs_coalescent(p$K, p$rho, tau, df=TRUE)
+              %>% hide(p$c) %>% f2c(df=T))}) %>% tbl_df
+
+K <- 10
+rho <- .5
+theta <- 200
+p <- .8
+
+(y <- img_fs(K, rho, theta))
+
+
+theta <- .5 * 4000 / 10
+rnorm(1000, theta, sqrt(theta*10)) %>% hist
+
+smod <- stan_model("img-bmiss-02.stan")
+
+p <- 1
+y <- img_fs(K, rho, theta)
+data <- list(K=K, M=as.integer(sum(y*1:length(y))), y=y, p=p)
+
+p <- .8
+y <- img_fs(K, rho, theta, df=T) %>% hide(p) %>% pull(frequency)
+data <- list(K=K, M=as.integer(sum(y*1:length(y))), y=y, p=p)
+sfit <- sampling(smod, iter=500, chain=4, data=data)
+
+p <- .5
+y <- img_fs(K, rho, theta, df=T) %>% hide(p) %>% pull(frequency)
+data <- list(K=K, M=as.integer(sum(y*1:length(y))), y=y, p=p)
+sfit <- sampling(smod, iter=500, chain=4, data=data)
+
+
+stan_plot(sfit)
+stan_trace(sfit)
+stan_scat(sfit, pars=c("rho", "theta"))
+stan_hist(sfit)
+stan_dens(sfit)
+stan_ac(sfit)
+
+
+f0
+
+sargs <- list(iter=1, chains=1)
+
+run_stan <- function(d){
+    sargs_data <- sargs
+    sargs_data$data <- list(N=nrow(d), K=d$K[1], x=d$count, c=d$c)
+    print(sargs_data)
+    sampling(smod, sargs)
+}
+
+d0
+
+d1 <- d0 %>% filter(count!=0) %>% filter(K==10, c==1, rho==2)
+dtt=list(N=nrow(d1), K=d1$K[1], x=d1$count, c=rep(d1$c[1]-0.001, d1$K[1]))
+dtt
+#+END_SRC
+
+**** DISC Gene counts on incomplete data are Bernulli trails with different p -> Poisson Binomial
+See hard-copy notes 2017/11/02
+
+Each gene cluster is a sequence of Bernulli trials (single event Binomial), with
+potentially different p for each trial. The outcome for the entire gene is the
+sum (or convolution) of the Bernulli trials.
+
+For a single p (p_1=p_2=..=p_n), this is simply a Binomial distribution.
+
+For different p, it turns into a Poisson-Binomial distribution - with an ugly
+PMF/CDF, try to avoid for now. Though, it comes with easy estimators for moments
+(mean + variance)
+
+#+BEGIN_SRC R
+library(tidyverse)
+
+rbinom_probmix <- function(n, size, probs){
+    replicate(N, sum(sapply(sample(probs, size), function(p) rbinom(1, 1, p))))
+}
+
+
+
+dbinom_probmix <- function(x, size, probs){
+    # this actually doesn't work - this should be something like a
+    # Poisson-Binomial distribution, i.e. a sequence of Bernulli's with
+    # different probs. However, the pmf/CDF of Poisson-Binomial are quite
+    # ugly...
+}
+
+d1 <- bind_rows(
+    .id="set",
+    p100=data_frame(count=1:Kmax, freq=dbinom(1:Kmax, K, 1)),
+    p080=data_frame(count=1:Kmax, freq=dbinom(1:Kmax, K, p)))
+
+
+N <- 1000
+K <- 100
+p <- .6
+p_mix <- rep(c(.2, 1), each=K/2)
+Kmax = K*1.05
+
+r1 <- bind_rows(
+    .id="set",
+    #p100=data_frame(count=K, freq=N),
+    p080=rbinom(N, K, p) %>% table %>% tbl_df %>%
+        select(count=1, freq=2) %>%
+        mutate(count=as.numeric(count)),
+    `p060-p100`=rbinom_probmix(N,K,p_mix) %>% table %>% tbl_df %>%
+        select(count=1, freq=2) %>%
+        mutate(count=as.numeric(count)),
+    p080n=rnorm(N, K*p, log(K)) %>% round %>% table %>% tbl_df %>%
+        select(count=1, freq=2) %>%
+        mutate(count=as.numeric(count))
+)
+str(r1)
+
+ggplot(r1) + aes(x=count, y=freq, fill=set) + xlim(0,NA) +
+    #geom_col(position=position_dodge(preserve="single")) +
+    geom_density(stat="identity", alpha=.3)
+#+END_SRC
+
+
 
 *** More TODOs
 **** Estimating rho1/2, theta1/2, weights and core
