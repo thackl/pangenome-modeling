@@ -41,8 +41,8 @@ model {
   
   // priors
   rho ~ cauchy(0.3, 10);
-  // theta_mu = rho * (M/p) / K;
-  // theta ~ normal(theta_mu, sqrt(theta_mu));
+  theta_mu = rho * (M/p) / K;
+  theta ~ normal(theta_mu, sqrt(theta_mu));
   // print("r: ", rho, ", t: ", theta);
 
   // generator
