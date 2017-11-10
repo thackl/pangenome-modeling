@@ -2040,6 +2040,8 @@ ggplot(d0) + aes(x=x, fill=g) + geom_bar(position=position_dodge(preserve="singl
 
 **** Fit incomplete IMG estimate using Stan
 
+Works, but still have systematic underestimation of rho for incomplete samples.
+
 #+BEGIN_SRC R
 library(tidyverse)
 theme_set(theme_bw())
@@ -2204,24 +2206,24 @@ stan_hist(sfit)
 stan_dens(sfit)
 stan_ac(sfit)
 
-
-f0
-
-sargs <- list(iter=1, chains=1)
-
-run_stan <- function(d){
-    sargs_data <- sargs
-    sargs_data$data <- list(N=nrow(d), K=d$K[1], x=d$count, c=d$c)
-    print(sargs_data)
-    sampling(smod, sargs)
-}
-
-d0
-
-d1 <- d0 %>% filter(count!=0) %>% filter(K==10, c==1, rho==2)
-dtt=list(N=nrow(d1), K=d1$K[1], x=d1$count, c=rep(d1$c[1]-0.001, d1$K[1]))
-dtt
 #+END_SRC
+
+**** zero-truncation required !!
+I don't observe 0-counts, hence I need to compare my counts against a
+0-truncated PMF to avoid a systematic bias for incomplete samples
+
+https://en.wikipedia.org/wiki/Truncated_distribution
+
+This is something like:
+: PMF(x) / ( CDF(X=UPPER) - CDF(X=LOWER) )
+for only lower, and lower=0, simplifies to
+: PMF(x) / ( 1 - CDF(X=0) )
+and CDF(X=0) in my case is PMF(X=0)
+: PMF(x) / ( 1 - PMF(X=0) )
+and in log space
+: logPMF(x) - log( 1 - exp(logPMF(X=0)))
+or in Stan
+: logPMF(x) - log1m_exp(logPMF(X=0))
 
 **** Fit incomplete IMG to sets of parameters - test suite
 
@@ -2338,22 +2340,7 @@ stan_ac(sfit1, lags=100)
 img_fs(10, 3, 1000)
 #+END_SRC
 
-**** zero-truncation
-I don't observe 0-counts, hence I need to compare my counts against a
-0-truncated PMF to avoid a systematic bias for incomplete samples
-
-https://en.wikipedia.org/wiki/Truncated_distribution
-
-This is something like:
-: PMF(x) / ( CDF(X=UPPER) - CDF(X=LOWER) )
-for only lower, and lower=0, simplifies to
-: PMF(x) / ( 1 - CDF(X=0) )
-and CDF(X=0) in my case is PMF(X=0)
-: PMF(x) / ( 1 - PMF(X=0) )
-and in log space
-: logPMF(x) - log( 1 - exp(logPMF(X=0)))
-or in Stan
-: logPMF(x) - log1m_exp(logPMF(X=0))
+****
 
 **** DISC Gene counts on incomplete data are Bernulli trails with different p -> Poisson Binomial
 See hard-copy notes 2017/11/02
